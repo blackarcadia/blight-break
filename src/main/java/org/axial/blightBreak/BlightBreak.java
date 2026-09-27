@@ -22,6 +22,7 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockCookEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
@@ -68,6 +69,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private static final double RESIDUE_REQUIREMENT_GROWTH = 1.10;
     private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
     private static final double TOXIC_WATER_DAMAGE = 1.0;
+    private static final double MINING_RESIDUE_CHANCE = 0.08;
+    private static final double FISHING_RESIDUE_CHANCE = 0.05;
+    private static final double MOB_KILL_RESIDUE_CHANCE = 0.10;
     private static final String TOXIC_WATER_MESSAGE = "&cWater is toxic and needs purifying";
     private static final Material[] PURIFICATION_FLOWERS = {
             Material.DANDELION,
@@ -611,6 +615,23 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         block.getWorld().dropItemNaturally(block.getLocation(), createCleansingPyre());
     }
 
+    /** Gives miners a small chance to find residue whenever they break a block. */
+    @EventHandler(ignoreCancelled = true)
+    private void onPlayerMine(BlockBreakEvent event) {
+        if (ThreadLocalRandom.current().nextDouble() < MINING_RESIDUE_CHANCE) {
+            event.getBlock().getWorld().dropItemNaturally(event.getBlock().getLocation(), createBlightedResidue());
+        }
+    }
+
+    /** Adds residue to the loot of mobs killed by a player. */
+    @EventHandler(ignoreCancelled = true)
+    private void onMobDeath(EntityDeathEvent event) {
+        if (!(event.getEntity() instanceof Player) && event.getEntity().getKiller() != null
+                && ThreadLocalRandom.current().nextDouble() < MOB_KILL_RESIDUE_CHANCE) {
+            event.getDrops().add(createBlightedResidue());
+        }
+    }
+
     /** Detoxifies toxic raw fish only when it is cooked on a Cleansing Pyre. */
     @EventHandler(ignoreCancelled = true)
     private void onCleansingPyreCook(BlockCookEvent event) {
@@ -638,6 +659,10 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private void onPlayerFish(PlayerFishEvent event) {
         if (event.getState() != PlayerFishEvent.State.CAUGHT_FISH || !(event.getCaught() instanceof Item caught)) {
             return;
+        }
+
+        if (ThreadLocalRandom.current().nextDouble() < FISHING_RESIDUE_CHANCE) {
+            caught.getWorld().dropItemNaturally(caught.getLocation(), createBlightedResidue());
         }
 
         ItemStack fish = caught.getItemStack();
