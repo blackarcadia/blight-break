@@ -51,6 +51,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
@@ -77,6 +78,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
     private static final double BLIGHT_DAMAGE = 1.0;
     private static final int BLIGHT_EFFECT_DURATION_TICKS = 40;
+    private static final long MINING_MONEY_REWARD = 1L;
+    private static final long MOB_KILL_MONEY_REWARD = 10L;
+    private static final long FISHING_MONEY_REWARD = 5L;
     private static final double MINING_RESIDUE_CHANCE = 0.08;
     private static final double FISHING_RESIDUE_CHANCE = 0.05;
     private static final double MOB_KILL_RESIDUE_CHANCE = 0.10;
@@ -115,6 +119,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("test").setExecutor(this::handleTestCommand);
         getCommand("plot").setExecutor(this::handlePlotCommand);
         getCommand("residue").setExecutor(this::handleResidueCommand);
+        getCommand("balance").setExecutor(this::handleBalanceCommand);
         getServer().getPluginManager().registerEvents(this, this);
         for (Player player : getServer().getOnlinePlayers()) {
             createSidebar(player);
@@ -166,7 +171,41 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                 "blightbreak", "dummy", ChatColor.translateAlternateColorCodes('&', SIDEBAR_TITLE)
         );
         objective.setDisplaySlot(DisplaySlot.SIDEBAR);
+        setSidebarLine(objective, "&0", 7);
+        setSidebarLine(objective, "&a&lPurity Level", 6);
+        setSidebarLine(objective, "&f" + playerPurityLevel(player), 5);
+        setSidebarLine(objective, "&1", 4);
+        setSidebarLine(objective, "&e&lBalance", 3);
+        setSidebarLine(objective, "&f" + formatMoney(balance(player)), 2);
+        setSidebarLine(objective, "&2", 1);
         player.setScoreboard(scoreboard);
+    }
+
+    private void setSidebarLine(Objective objective, String text, int score) {
+        objective.getScore(ChatColor.translateAlternateColorCodes('&', text)).setScore(score);
+    }
+
+    private int playerPurityLevel(Player player) {
+        World world = player.getWorld();
+        return world.getName().startsWith(PLAYER_WORLD_PREFIX) ? purificationLevel(world) : 0;
+    }
+
+    private NamespacedKey balanceKey() {
+        return new NamespacedKey(this, "balance");
+    }
+
+    private long balance(Player player) {
+        Long balance = player.getPersistentDataContainer().get(balanceKey(), PersistentDataType.LONG);
+        return balance == null ? 0L : balance;
+    }
+
+    private void addBalance(Player player, long amount) {
+        player.getPersistentDataContainer().set(balanceKey(), PersistentDataType.LONG, balance(player) + amount);
+        createSidebar(player);
+    }
+
+    private String formatMoney(long amount) {
+        return String.format(Locale.US, "$%,d", amount);
     }
 
     @EventHandler
@@ -665,6 +704,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     /** Gives miners a small chance to find residue whenever they break a block. */
     @EventHandler(ignoreCancelled = true)
     private void onPlayerMine(BlockBreakEvent event) {
+        addBalance(event.getPlayer(), MINING_MONEY_REWARD);
         if (ThreadLocalRandom.current().nextDouble() < MINING_RESIDUE_CHANCE) {
             event.getBlock().getWorld().dropItemNaturally(event.getBlock().getLocation(), createBlightedResidue());
         }
@@ -673,8 +713,13 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     /** Adds residue to the loot of mobs killed by a player. */
     @EventHandler(ignoreCancelled = true)
     private void onMobDeath(EntityDeathEvent event) {
-        if (!(event.getEntity() instanceof Player) && event.getEntity().getKiller() != null
-                && ThreadLocalRandom.current().nextDouble() < MOB_KILL_RESIDUE_CHANCE) {
+        if (event.getEntity() instanceof Player || event.getEntity().getKiller() == null) {
+            return;
+        }
+
+        Player killer = event.getEntity().getKiller();
+        addBalance(killer, MOB_KILL_MONEY_REWARD);
+        if (ThreadLocalRandom.current().nextDouble() < MOB_KILL_RESIDUE_CHANCE) {
             event.getDrops().add(createBlightedResidue());
         }
     }
@@ -711,6 +756,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         if (ThreadLocalRandom.current().nextDouble() < FISHING_RESIDUE_CHANCE) {
             caught.getWorld().dropItemNaturally(caught.getLocation(), createBlightedResidue());
         }
+        addBalance(event.getPlayer(), FISHING_MONEY_REWARD);
 
         ItemStack fish = caught.getItemStack();
         if (!isRawFish(fish.getType())) {
@@ -815,16 +861,17 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             placeFirstPurificationFlowers(world, minX, maxX, minZ, maxZ);
         }
         markChunksPurified(world, minX, maxX, minZ, maxZ);
-        for (Player player : world.getPlayers()) {
-            if (isPurified(player.getLocation().getChunk())) {
-                removeBlightEffects(player);
-            }
-        }
         world.getPersistentDataContainer().set(residueAmountKey(), PersistentDataType.INTEGER, 0);
         int nextRequirement = (int) Math.ceil(residueRequirement(world) * RESIDUE_REQUIREMENT_GROWTH);
         world.getPersistentDataContainer().set(residueRequirementKey(), PersistentDataType.INTEGER, nextRequirement);
         world.getPersistentDataContainer().set(purificationLevelKey(), PersistentDataType.INTEGER, completedPurifications + 1);
         updateResidueCounter(world);
+        for (Player player : world.getPlayers()) {
+            if (isPurified(player.getLocation().getChunk())) {
+                removeBlightEffects(player);
+            }
+            createSidebar(player);
+        }
     }
 
     private void placeFirstPurificationFlowers(World world, int minX, int maxX, int minZ, int maxZ) {
@@ -911,6 +958,16 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                 .values()
                 .forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
         player.sendMessage(ChatColor.GREEN + "You received Blighted Residue.");
+        return true;
+    }
+
+    private boolean handleBalanceCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Only players have a balance.");
+            return true;
+        }
+
+        player.sendMessage(ChatColor.translateAlternateColorCodes('&', "&a&lBalance:\n&f" + formatMoney(balance(player))));
         return true;
     }
 

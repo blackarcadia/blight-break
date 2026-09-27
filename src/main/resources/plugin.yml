@@ -17,3 +17,6 @@ commands:
   residue:
     description: Gives Blighted Residue to a player.
     usage: /residue give <player> <amount>
+  balance:
+    description: Shows your current balance.
+    usage: /balance
