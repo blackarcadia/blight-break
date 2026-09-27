@@ -3,6 +3,7 @@ package org.axial.blightBreak;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.WorldCreator;
 import org.bukkit.command.Command;
@@ -17,6 +18,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 public final class BlightBreak extends JavaPlugin implements Listener {
 
@@ -29,6 +31,71 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("test").setExecutor(this::handleTestCommand);
         getCommand("plot").setExecutor(this::handlePlotCommand);
         getServer().getPluginManager().registerEvents(this, this);
+        getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 10L);
+    }
+
+    /** Keeps the edge of each wasteland visibly hostile without placing particles outside its border. */
+    private void spawnBorderParticles() {
+        for (Player player : getServer().getOnlinePlayers()) {
+            World world = player.getWorld();
+            if (!world.getName().startsWith(PLAYER_WORLD_PREFIX)) {
+                continue;
+            }
+
+            Location particleLocation = randomBorderLocation(world);
+            if (particleLocation == null) {
+                continue;
+            }
+
+            ThreadLocalRandom random = ThreadLocalRandom.current();
+            if (random.nextInt(100) < 65) {
+                player.spawnParticle(Particle.ASH, particleLocation, 5, 0.65, 1.2, 0.65, 0.01);
+            } else if (random.nextBoolean()) {
+                player.spawnParticle(Particle.SOUL_FIRE_FLAME, particleLocation, 2, 0.45, 0.8, 0.45, 0.005);
+            } else {
+                player.spawnParticle(Particle.CRIMSON_SPORE, particleLocation, 3, 0.65, 1.0, 0.65, 0.01);
+            }
+        }
+    }
+
+    private Location randomBorderLocation(World world) {
+        double halfSize = world.getWorldBorder().getSize() / 2.0;
+        if (halfSize <= 2.0) {
+            return null;
+        }
+
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        double centerX = world.getWorldBorder().getCenter().getX();
+        double centerZ = world.getWorldBorder().getCenter().getZ();
+        double inset = 1.25;
+        double minX = centerX - halfSize + inset;
+        double maxX = centerX + halfSize - inset;
+        double minZ = centerZ - halfSize + inset;
+        double maxZ = centerZ + halfSize - inset;
+        double x;
+        double z;
+
+        switch (random.nextInt(4)) {
+            case 0 -> {
+                x = minX;
+                z = random.nextDouble(minZ, maxZ);
+            }
+            case 1 -> {
+                x = maxX;
+                z = random.nextDouble(minZ, maxZ);
+            }
+            case 2 -> {
+                x = random.nextDouble(minX, maxX);
+                z = minZ;
+            }
+            default -> {
+                x = random.nextDouble(minX, maxX);
+                z = maxZ;
+            }
+        }
+
+        int groundY = world.getHighestBlockYAt((int) Math.floor(x), (int) Math.floor(z));
+        return new Location(world, x, groundY + random.nextDouble(1.5, 10.0), z);
     }
 
     private World createWasteland(String playerName) {
