@@ -1,6 +1,7 @@
 package org.axial.blightBreak;
 
 import org.bukkit.ChatColor;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -9,13 +10,21 @@ import org.bukkit.World;
 import org.bukkit.WorldCreator;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.block.Block;
+import org.bukkit.block.TileState;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockCookEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
@@ -51,6 +60,8 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private static final int STARTING_RESIDUE_REQUIREMENT = 5;
     private static final double RESIDUE_REQUIREMENT_GROWTH = 1.10;
     private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
+    private static final double TOXIC_WATER_DAMAGE = 1.0;
+    private static final String TOXIC_WATER_MESSAGE = "&cWater is toxic and needs purifying";
     private static final Material[] PURIFICATION_FLOWERS = {
             Material.DANDELION,
             Material.POPPY,
@@ -70,6 +81,21 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("residue").setExecutor(this::handleResidueCommand);
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 5L);
+        getServer().getScheduler().runTaskTimer(this, this::damagePlayersInToxicWater, 20L, 20L);
+    }
+
+    /** Damages players standing in water outside land purified by the Nexus. */
+    private void damagePlayersInToxicWater() {
+        for (Player player : getServer().getOnlinePlayers()) {
+            World world = player.getWorld();
+            if (!world.getName().startsWith(PLAYER_WORLD_PREFIX) || !player.isInWater()
+                    || isPurified(player.getLocation().getChunk())) {
+                continue;
+            }
+
+            player.sendActionBar(ChatColor.translateAlternateColorCodes('&', TOXIC_WATER_MESSAGE));
+            player.damage(TOXIC_WATER_DAMAGE);
+        }
     }
 
     /** Keeps the edge of each wasteland visibly hostile without placing particles outside its border. */
@@ -256,6 +282,27 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         return new NamespacedKey(this, "nexus_purification_level");
     }
 
+    private NamespacedKey purifiedChunkKey() {
+        return new NamespacedKey(this, "purified_chunk");
+    }
+
+    private boolean isPurified(Chunk chunk) {
+        return chunk.getPersistentDataContainer().has(purifiedChunkKey(), PersistentDataType.BYTE);
+    }
+
+    private void markChunksPurified(World world, int minX, int maxX, int minZ, int maxZ) {
+        int minChunkX = minX >> 4;
+        int maxChunkX = maxX >> 4;
+        int minChunkZ = minZ >> 4;
+        int maxChunkZ = maxZ >> 4;
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                world.getChunkAt(chunkX, chunkZ).getPersistentDataContainer()
+                        .set(purifiedChunkKey(), PersistentDataType.BYTE, (byte) 1);
+            }
+        }
+    }
+
     private ItemStack createBlightedResidue() {
         ItemStack residue = new ItemStack(Material.NETHERRACK);
         ItemMeta meta = residue.getItemMeta();
@@ -294,11 +341,29 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         return tool;
     }
 
+    private ItemStack createCleansingPyre() {
+        ItemStack pyre = new ItemStack(Material.CAMPFIRE);
+        ItemMeta meta = pyre.getItemMeta();
+        meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', "&6&lCleansing Pyre"));
+        meta.setLore(List.of(
+                ChatColor.translateAlternateColorCodes('&', "&7Used to detoxify toxic"),
+                ChatColor.translateAlternateColorCodes('&', "&7fish."),
+                "",
+                ChatColor.translateAlternateColorCodes('&', "&7Hint: Cook fish on this pyre to"),
+                ChatColor.translateAlternateColorCodes('&', "&7detoxify.")
+        ));
+        meta.getPersistentDataContainer().set(cleansingPyreItemKey(), PersistentDataType.BYTE, (byte) 1);
+        pyre.setItemMeta(meta);
+        return pyre;
+    }
+
     private void giveStartingTools(Player player) {
         List<ItemStack> tools = List.of(
                 createBoundTool(Material.STONE_PICKAXE, player, 280),
                 createBoundTool(Material.STONE_AXE, player, null),
-                createBoundTool(Material.STONE_SWORD, player, 245)
+                createBoundTool(Material.STONE_SWORD, player, 245),
+                createBoundTool(Material.FISHING_ROD, player, null),
+                createCleansingPyre()
         );
         player.getInventory().addItem(tools.toArray(ItemStack[]::new))
                 .values()
@@ -312,6 +377,68 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         String ownerId = item.getItemMeta().getPersistentDataContainer()
                 .get(boundToolOwnerKey(), PersistentDataType.STRING);
         return playerId.toString().equals(ownerId);
+    }
+
+    private boolean isBoundTool(ItemStack item) {
+        return item != null && item.hasItemMeta()
+                && item.getItemMeta().getPersistentDataContainer()
+                .has(boundToolOwnerKey(), PersistentDataType.STRING);
+    }
+
+    private NamespacedKey cleansingPyreItemKey() {
+        return new NamespacedKey(this, "cleansing_pyre_item");
+    }
+
+    private NamespacedKey cleansingPyreBlockKey() {
+        return new NamespacedKey(this, "cleansing_pyre_block");
+    }
+
+    private NamespacedKey cleansingPyreHologramKey() {
+        return new NamespacedKey(this, "cleansing_pyre_hologram");
+    }
+
+    private NamespacedKey toxicFishKey() {
+        return new NamespacedKey(this, "toxic_fish");
+    }
+
+    private boolean isCleansingPyreItem(ItemStack item) {
+        return item != null && item.hasItemMeta() && item.getItemMeta().getPersistentDataContainer()
+                .has(cleansingPyreItemKey(), PersistentDataType.BYTE);
+    }
+
+    private boolean isCleansingPyre(Block block) {
+        return block.getType() == Material.CAMPFIRE && block.getState() instanceof TileState state
+                && state.getPersistentDataContainer().has(cleansingPyreBlockKey(), PersistentDataType.STRING);
+    }
+
+    private boolean isToxicFish(ItemStack item) {
+        return item != null && item.hasItemMeta() && item.getItemMeta().getPersistentDataContainer()
+                .has(toxicFishKey(), PersistentDataType.BYTE);
+    }
+
+    private void spawnCleansingPyreHologram(Block block, String pyreId) {
+        Location location = block.getLocation().add(0.5, 1.35, 0.5);
+        block.getWorld().spawn(location, TextDisplay.class, hologram -> {
+            hologram.text(LegacyComponentSerializer.legacyAmpersand().deserialize("&6&lCleansing Pyre"));
+            hologram.setBillboard(TextDisplay.Billboard.CENTER);
+            hologram.setSeeThrough(true);
+            hologram.setShadowed(true);
+            hologram.getPersistentDataContainer().set(
+                    cleansingPyreHologramKey(), PersistentDataType.STRING, pyreId
+            );
+        });
+    }
+
+    private void removeCleansingPyreHologram(Block block, String pyreId) {
+        for (TextDisplay hologram : block.getWorld().getNearbyEntitiesByType(
+                TextDisplay.class, block.getLocation().add(0.5, 1.35, 0.5), 2.0
+        )) {
+            String hologramId = hologram.getPersistentDataContainer()
+                    .get(cleansingPyreHologramKey(), PersistentDataType.STRING);
+            if (pyreId.equals(hologramId)) {
+                hologram.remove();
+            }
+        }
     }
 
     private static long worldSeed(String playerName) {
@@ -375,6 +502,112 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                 .addItem(savedTools.toArray(ItemStack[]::new))
                 .values()
                 .forEach(item -> event.getPlayer().getWorld().dropItemNaturally(event.getPlayer().getLocation(), item)));
+    }
+
+    /** Keeps bound starting tools in a player's inventory when they try to drop them. */
+    @EventHandler
+    private void onPlayerDropItem(PlayerDropItemEvent event) {
+        if (isBoundTool(event.getItemDrop().getItemStack())) {
+            event.setCancelled(true);
+        }
+    }
+
+    /** Marks placed Cleansing Pyres and creates the hologram tied to that exact block. */
+    @EventHandler(ignoreCancelled = true)
+    private void onCleansingPyrePlace(BlockPlaceEvent event) {
+        if (!isCleansingPyreItem(event.getItemInHand())) {
+            return;
+        }
+
+        Block block = event.getBlockPlaced();
+        if (!(block.getState() instanceof TileState state)) {
+            return;
+        }
+
+        String pyreId = UUID.randomUUID().toString();
+        state.getPersistentDataContainer().set(cleansingPyreBlockKey(), PersistentDataType.STRING, pyreId);
+        state.update();
+        spawnCleansingPyreHologram(block, pyreId);
+    }
+
+    /** Removes a pyre's hologram and returns the marked item when it is broken. */
+    @EventHandler(ignoreCancelled = true)
+    private void onCleansingPyreBreak(BlockBreakEvent event) {
+        Block block = event.getBlock();
+        if (!isCleansingPyre(block) || !(block.getState() instanceof TileState state)) {
+            return;
+        }
+
+        String pyreId = state.getPersistentDataContainer()
+                .get(cleansingPyreBlockKey(), PersistentDataType.STRING);
+        if (pyreId != null) {
+            removeCleansingPyreHologram(block, pyreId);
+        }
+        event.setDropItems(false);
+        block.getWorld().dropItemNaturally(block.getLocation(), createCleansingPyre());
+    }
+
+    /** Detoxifies toxic raw fish only when it is cooked on a Cleansing Pyre. */
+    @EventHandler(ignoreCancelled = true)
+    private void onCleansingPyreCook(BlockCookEvent event) {
+        if (!isToxicFish(event.getSource())) {
+            return;
+        }
+        if (!isCleansingPyre(event.getBlock())) {
+            event.setCancelled(true);
+            return;
+        }
+
+        Material cookedFish = switch (event.getSource().getType()) {
+            case COD -> Material.COOKED_COD;
+            case SALMON -> Material.COOKED_SALMON;
+            default -> null;
+        };
+        if (cookedFish != null) {
+            ItemStack purifiedFish = new ItemStack(cookedFish, event.getResult().getAmount());
+            event.setResult(purifiedFish);
+        }
+    }
+
+    /** Replaces fish caught by a player with toxic fish that must be cooked on a Cleansing Pyre. */
+    @EventHandler(ignoreCancelled = true)
+    private void onPlayerFish(PlayerFishEvent event) {
+        if (event.getState() != PlayerFishEvent.State.CAUGHT_FISH || !(event.getCaught() instanceof Item caught)) {
+            return;
+        }
+
+        ItemStack fish = caught.getItemStack();
+        if (!isRawFish(fish.getType())) {
+            return;
+        }
+
+        ItemMeta meta = fish.getItemMeta();
+        meta.setDisplayName(ChatColor.RED + "Toxic " + formatFishType(fish.getType()));
+        meta.setLore(List.of(
+                ChatColor.translateAlternateColorCodes('&', "&7This fish is toxic and"),
+                ChatColor.translateAlternateColorCodes('&', "&7must be detoxified before"),
+                ChatColor.translateAlternateColorCodes('&', "&7consumption.")
+        ));
+        meta.getPersistentDataContainer().set(toxicFishKey(), PersistentDataType.BYTE, (byte) 1);
+        fish.setItemMeta(meta);
+        caught.setItemStack(fish);
+    }
+
+    private boolean isRawFish(Material material) {
+        return material == Material.COD || material == Material.SALMON
+                || material == Material.PUFFERFISH || material == Material.TROPICAL_FISH;
+    }
+
+    private String formatFishType(Material material) {
+        String[] words = material.name().toLowerCase().split("_");
+        StringBuilder formatted = new StringBuilder();
+        for (String word : words) {
+            if (!formatted.isEmpty()) {
+                formatted.append(' ');
+            }
+            formatted.append(Character.toUpperCase(word.charAt(0))).append(word.substring(1));
+        }
+        return formatted.toString();
     }
 
     /** Handles residue deposits and starts a purification once the Nexus is charged. */
@@ -446,6 +679,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         if (completedPurifications == 0) {
             placeFirstPurificationFlowers(world, minX, maxX, minZ, maxZ);
         }
+        markChunksPurified(world, minX, maxX, minZ, maxZ);
         world.getPersistentDataContainer().set(residueAmountKey(), PersistentDataType.INTEGER, 0);
         int nextRequirement = (int) Math.ceil(residueRequirement(world) * RESIDUE_REQUIREMENT_GROWTH);
         world.getPersistentDataContainer().set(residueRequirementKey(), PersistentDataType.INTEGER, nextRequirement);
