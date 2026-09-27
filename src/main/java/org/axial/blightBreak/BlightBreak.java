@@ -78,7 +78,6 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
     private static final double BLIGHT_DAMAGE = 1.0;
     private static final int BLIGHT_EFFECT_DURATION_TICKS = 40;
-    private static final long MINING_MONEY_REWARD = 1L;
     private static final long MOB_KILL_MONEY_REWARD = 10L;
     private static final long FISHING_MONEY_REWARD = 5L;
     private static final double MINING_RESIDUE_CHANCE = 0.08;
@@ -704,7 +703,6 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     /** Gives miners a small chance to find residue whenever they break a block. */
     @EventHandler(ignoreCancelled = true)
     private void onPlayerMine(BlockBreakEvent event) {
-        addBalance(event.getPlayer(), MINING_MONEY_REWARD);
         if (ThreadLocalRandom.current().nextDouble() < MINING_RESIDUE_CHANCE) {
             event.getBlock().getWorld().dropItemNaturally(event.getBlock().getLocation(), createBlightedResidue());
         }
