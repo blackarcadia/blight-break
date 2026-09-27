@@ -36,6 +36,8 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 
 import java.io.File;
 import java.io.IOException;
@@ -65,14 +67,14 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
     private static final String PLAYER_WORLD_PREFIX = "BlightBreak_";
     private static final double STARTING_PLOT_SIZE = 16.0;
-    private static final int STARTING_RESIDUE_REQUIREMENT = 5;
+    private static final int STARTING_RESIDUE_REQUIREMENT = 25;
     private static final double RESIDUE_REQUIREMENT_GROWTH = 1.10;
     private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
-    private static final double TOXIC_WATER_DAMAGE = 1.0;
+    private static final double BLIGHT_DAMAGE = 1.0;
+    private static final int BLIGHT_EFFECT_DURATION_TICKS = 40;
     private static final double MINING_RESIDUE_CHANCE = 0.08;
     private static final double FISHING_RESIDUE_CHANCE = 0.05;
     private static final double MOB_KILL_RESIDUE_CHANCE = 0.10;
-    private static final String TOXIC_WATER_MESSAGE = "&cWater is toxic and needs purifying";
     private static final Material[] PURIFICATION_FLOWERS = {
             Material.DANDELION,
             Material.POPPY,
@@ -110,21 +112,44 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("residue").setExecutor(this::handleResidueCommand);
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 5L);
-        getServer().getScheduler().runTaskTimer(this, this::damagePlayersInToxicWater, 20L, 20L);
+        getServer().getScheduler().runTaskTimer(this, this::applyBlightHazards, 20L, 20L);
     }
 
-    /** Damages players standing in water outside land purified by the Nexus. */
-    private void damagePlayersInToxicWater() {
+    /** Applies the effects and damage caused by unpurified wasteland chunks. */
+    private void applyBlightHazards() {
         for (Player player : getServer().getOnlinePlayers()) {
             World world = player.getWorld();
-            if (!world.getName().startsWith(PLAYER_WORLD_PREFIX) || !player.isInWater()
-                    || isPurified(player.getLocation().getChunk())) {
+            if (!world.getName().startsWith(PLAYER_WORLD_PREFIX)) {
                 continue;
             }
 
-            player.sendActionBar(ChatColor.translateAlternateColorCodes('&', TOXIC_WATER_MESSAGE));
-            player.damage(TOXIC_WATER_DAMAGE);
+            Chunk chunk = player.getLocation().getChunk();
+            if (isPurified(chunk)) {
+                removeBlightEffects(player);
+                continue;
+            }
+
+            player.addPotionEffect(new PotionEffect(PotionEffectType.WEAKNESS, BLIGHT_EFFECT_DURATION_TICKS, 0));
+            player.addPotionEffect(new PotionEffect(PotionEffectType.MINING_FATIGUE, BLIGHT_EFFECT_DURATION_TICKS, 0));
+
+            if (!isStartingPlotChunk(chunk)) {
+                player.addPotionEffect(new PotionEffect(PotionEffectType.NAUSEA, BLIGHT_EFFECT_DURATION_TICKS, 0));
+                player.damage(BLIGHT_DAMAGE);
+            } else {
+                player.removePotionEffect(PotionEffectType.NAUSEA);
+            }
         }
+    }
+
+    private boolean isStartingPlotChunk(Chunk chunk) {
+        Location nexus = nexusLocation(chunk.getWorld());
+        return nexus != null && chunk.getX() == nexus.getChunk().getX() && chunk.getZ() == nexus.getChunk().getZ();
+    }
+
+    private void removeBlightEffects(Player player) {
+        player.removePotionEffect(PotionEffectType.WEAKNESS);
+        player.removePotionEffect(PotionEffectType.MINING_FATIGUE);
+        player.removePotionEffect(PotionEffectType.NAUSEA);
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -683,8 +708,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     }
 
     private boolean isRawFish(Material material) {
-        return material == Material.COD || material == Material.SALMON
-                || material == Material.PUFFERFISH || material == Material.TROPICAL_FISH;
+        return material == Material.COD || material == Material.SALMON || material == Material.TROPICAL_FISH;
     }
 
     private String formatFishType(Material material) {
@@ -769,6 +793,11 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             placeFirstPurificationFlowers(world, minX, maxX, minZ, maxZ);
         }
         markChunksPurified(world, minX, maxX, minZ, maxZ);
+        for (Player player : world.getPlayers()) {
+            if (isPurified(player.getLocation().getChunk())) {
+                removeBlightEffects(player);
+            }
+        }
         world.getPersistentDataContainer().set(residueAmountKey(), PersistentDataType.INTEGER, 0);
         int nextRequirement = (int) Math.ceil(residueRequirement(world) * RESIDUE_REQUIREMENT_GROWTH);
         world.getPersistentDataContainer().set(residueRequirementKey(), PersistentDataType.INTEGER, nextRequirement);
