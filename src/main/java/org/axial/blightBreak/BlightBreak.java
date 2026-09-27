@@ -14,27 +14,50 @@ import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.persistence.PersistentDataType;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 public final class BlightBreak extends JavaPlugin implements Listener {
 
+    private final Map<UUID, List<ItemStack>> deathBoundTools = new HashMap<>();
+
     private static final String PLAYER_WORLD_PREFIX = "BlightBreak_";
     private static final double STARTING_PLOT_SIZE = 16.0;
-    private static final int RESIDUE_REQUIRED_FOR_PURIFICATION = 64;
+    private static final int STARTING_RESIDUE_REQUIREMENT = 5;
+    private static final double RESIDUE_REQUIREMENT_GROWTH = 1.10;
+    private static final int FIRST_PURIFICATION_FLOWER_COUNT = 12;
+    private static final Material[] PURIFICATION_FLOWERS = {
+            Material.DANDELION,
+            Material.POPPY,
+            Material.AZURE_BLUET,
+            Material.OXEYE_DAISY,
+            Material.CORNFLOWER
+    };
     private static final String NEXUS_CORE_MESSAGE = "&a&l(!) Nexus Core\n\n"
             + "&fThe Nexus Core allows you to purify your land, making it safe to enhabit.\n\n"
             + "&fApply blighted residue by interacting with the nexus while holding residue. "
@@ -132,23 +155,32 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             throw new IllegalStateException("Could not create the BlightBreak wasteland world.");
         }
 
-        configureStartingPlot(world, generator);
+        configureStartingPlot(world, generator, newlyCreated);
         if (newlyCreated) {
             createNexus(world);
         }
         return world;
     }
 
-    private void configureStartingPlot(World world, WastelandGenerator generator) {
+    private void configureStartingPlot(World world, WastelandGenerator generator, boolean newlyCreated) {
         double centerX = generator.startingPlotCenterX();
         double centerZ = generator.startingPlotCenterZ();
         world.getWorldBorder().setCenter(centerX, centerZ);
-        world.getWorldBorder().setSize(STARTING_PLOT_SIZE);
-        world.setSpawnLocation(
-                (int) centerX,
-                generator.groundHeight((int) centerX, (int) centerZ) + 1,
-                (int) centerZ
-        );
+        if (newlyCreated) {
+            world.getWorldBorder().setSize(STARTING_PLOT_SIZE);
+            world.setSpawnLocation(
+                    (int) centerX,
+                    generator.groundHeight((int) centerX, (int) centerZ) + 1,
+                    (int) centerZ
+            );
+        } else {
+            // The Nexus beacon occupies ground height + 1; returning players stand on top of it.
+            world.setSpawnLocation(
+                    (int) centerX,
+                    generator.groundHeight((int) centerX, (int) centerZ) + 2,
+                    (int) centerZ
+            );
+        }
     }
 
     /** Creates the landmark at the centre of a newly claimed plot. */
@@ -185,7 +217,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         Location residueCounterLocation = new Location(world, centerX + 0.5, baseY + 2.4, centerZ + 0.5);
         world.spawn(residueCounterLocation, TextDisplay.class, hologram -> {
             hologram.text(LegacyComponentSerializer.legacyAmpersand().deserialize(
-                    "&e" + storedResidue(world) + " / " + RESIDUE_REQUIRED_FOR_PURIFICATION + " Residue"
+                    residueCounterText(world)
             ));
             hologram.setBillboard(TextDisplay.Billboard.CENTER);
             hologram.setSeeThrough(true);
@@ -198,8 +230,30 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         return amount == null ? 0 : amount;
     }
 
+    private int residueRequirement(World world) {
+        Integer amount = world.getPersistentDataContainer().get(residueRequirementKey(), PersistentDataType.INTEGER);
+        return amount == null ? STARTING_RESIDUE_REQUIREMENT : amount;
+    }
+
+    private String residueCounterText(World world) {
+        return "&e" + storedResidue(world) + " / " + residueRequirement(world) + " Residue";
+    }
+
     private NamespacedKey residueAmountKey() {
         return new NamespacedKey(this, "nexus_residue");
+    }
+
+    private NamespacedKey residueRequirementKey() {
+        return new NamespacedKey(this, "nexus_residue_requirement");
+    }
+
+    private int purificationLevel(World world) {
+        Integer level = world.getPersistentDataContainer().get(purificationLevelKey(), PersistentDataType.INTEGER);
+        return level == null ? 0 : level;
+    }
+
+    private NamespacedKey purificationLevelKey() {
+        return new NamespacedKey(this, "nexus_purification_level");
     }
 
     private ItemStack createBlightedResidue() {
@@ -220,6 +274,44 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
     private NamespacedKey residueItemKey() {
         return new NamespacedKey(this, "blighted_residue");
+    }
+
+    private NamespacedKey boundToolOwnerKey() {
+        return new NamespacedKey(this, "bound_tool_owner");
+    }
+
+    private ItemStack createBoundTool(Material material, Player owner, Integer customModelData) {
+        ItemStack tool = new ItemStack(material);
+        ItemMeta meta = tool.getItemMeta();
+        meta.setUnbreakable(true);
+        if (customModelData != null) {
+            meta.setCustomModelData(customModelData);
+        }
+        meta.getPersistentDataContainer().set(
+                boundToolOwnerKey(), PersistentDataType.STRING, owner.getUniqueId().toString()
+        );
+        tool.setItemMeta(meta);
+        return tool;
+    }
+
+    private void giveStartingTools(Player player) {
+        List<ItemStack> tools = List.of(
+                createBoundTool(Material.STONE_PICKAXE, player, 280),
+                createBoundTool(Material.STONE_AXE, player, null),
+                createBoundTool(Material.STONE_SWORD, player, 245)
+        );
+        player.getInventory().addItem(tools.toArray(ItemStack[]::new))
+                .values()
+                .forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
+    }
+
+    private boolean isBoundToolFor(ItemStack item, UUID playerId) {
+        if (item == null || !item.hasItemMeta()) {
+            return false;
+        }
+        String ownerId = item.getItemMeta().getPersistentDataContainer()
+                .get(boundToolOwnerKey(), PersistentDataType.STRING);
+        return playerId.toString().equals(ownerId);
     }
 
     private static long worldSeed(String playerName) {
@@ -255,17 +347,159 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         scheduleUnloadIfEmpty(event.getPlayer().getWorld());
     }
 
-    /** Replaces the beacon's standard interface with the Nexus Core instructions. */
+    /** Prevents a player's plot tools from being included in their death drops. */
+    @EventHandler
+    private void onPlayerDeath(PlayerDeathEvent event) {
+        UUID playerId = event.getEntity().getUniqueId();
+        List<ItemStack> savedTools = new ArrayList<>();
+        event.getDrops().removeIf(item -> {
+            if (!isBoundToolFor(item, playerId)) {
+                return false;
+            }
+            savedTools.add(item.clone());
+            return true;
+        });
+        if (!savedTools.isEmpty()) {
+            deathBoundTools.put(playerId, savedTools);
+        }
+    }
+
+    @EventHandler
+    private void onPlayerRespawn(PlayerRespawnEvent event) {
+        List<ItemStack> savedTools = deathBoundTools.remove(event.getPlayer().getUniqueId());
+        if (savedTools == null) {
+            return;
+        }
+
+        getServer().getScheduler().runTask(this, () -> event.getPlayer().getInventory()
+                .addItem(savedTools.toArray(ItemStack[]::new))
+                .values()
+                .forEach(item -> event.getPlayer().getWorld().dropItemNaturally(event.getPlayer().getLocation(), item)));
+    }
+
+    /** Handles residue deposits and starts a purification once the Nexus is charged. */
     @EventHandler
     private void onNexusInteract(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getClickedBlock() == null
                 || event.getClickedBlock().getType() != Material.BEACON
-                || !isNexus(event.getClickedBlock().getLocation())) {
+                || !isNexus(event.getClickedBlock().getLocation())
+                || event.getHand() != EquipmentSlot.HAND) {
             return;
         }
 
         event.setCancelled(true);
-        event.getPlayer().sendMessage(ChatColor.translateAlternateColorCodes('&', NEXUS_CORE_MESSAGE));
+        Player player = event.getPlayer();
+        World world = event.getClickedBlock().getWorld();
+        int stored = storedResidue(world);
+        int required = residueRequirement(world);
+
+        if (stored >= required) {
+            purifyClaim(world);
+            player.sendMessage(ChatColor.GREEN + "The Nexus purifies your claim.");
+            return;
+        }
+
+        ItemStack heldItem = player.getInventory().getItemInMainHand();
+        if (!isBlightedResidue(heldItem)) {
+            player.sendMessage(ChatColor.translateAlternateColorCodes('&', NEXUS_CORE_MESSAGE));
+            return;
+        }
+
+        int deposited = player.isSneaking() ? heldItem.getAmount() : 1;
+        heldItem.setAmount(heldItem.getAmount() - deposited);
+        player.getInventory().setItemInMainHand(heldItem.getAmount() == 0 ? null : heldItem);
+        world.getPersistentDataContainer().set(residueAmountKey(), PersistentDataType.INTEGER, stored + deposited);
+        updateResidueCounter(world);
+        player.sendMessage(ChatColor.YELLOW + "Added " + deposited + " residue to the Nexus ("
+                + (stored + deposited) + "/" + required + ").");
+    }
+
+    private boolean isBlightedResidue(ItemStack item) {
+        return item != null && item.hasItemMeta()
+                && item.getItemMeta().getPersistentDataContainer().has(residueItemKey(), PersistentDataType.BYTE);
+    }
+
+    private void purifyClaim(World world) {
+        int completedPurifications = purificationLevel(world);
+        double oldBorderSize = world.getWorldBorder().getSize();
+        double halfSize = oldBorderSize / 2.0;
+        double centerX = world.getWorldBorder().getCenter().getX();
+        double centerZ = world.getWorldBorder().getCenter().getZ();
+        int minX = (int) Math.ceil(centerX - halfSize - 0.5);
+        int maxX = (int) Math.floor(centerX + halfSize - 0.5);
+        int minZ = (int) Math.ceil(centerZ - halfSize - 0.5);
+        int maxZ = (int) Math.floor(centerZ + halfSize - 0.5);
+
+        for (int x = minX; x <= maxX; x++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int y = world.getMinHeight(); y < world.getMaxHeight(); y++) {
+                    org.bukkit.block.Block block = world.getBlockAt(x, y, z);
+                    Material material = block.getType();
+                    if (material == Material.DIRT || material == Material.ROOTED_DIRT || material == Material.GRAVEL
+                            || material == Material.PODZOL || material == Material.DIRT_PATH) {
+                        block.setType(Material.GRASS_BLOCK, false);
+                    }
+                }
+            }
+        }
+
+        if (completedPurifications == 0) {
+            placeFirstPurificationFlowers(world, minX, maxX, minZ, maxZ);
+        }
+        world.getPersistentDataContainer().set(residueAmountKey(), PersistentDataType.INTEGER, 0);
+        int nextRequirement = (int) Math.ceil(residueRequirement(world) * RESIDUE_REQUIREMENT_GROWTH);
+        world.getPersistentDataContainer().set(residueRequirementKey(), PersistentDataType.INTEGER, nextRequirement);
+        world.getPersistentDataContainer().set(purificationLevelKey(), PersistentDataType.INTEGER, completedPurifications + 1);
+        updateResidueCounter(world);
+    }
+
+    private void placeFirstPurificationFlowers(World world, int minX, int maxX, int minZ, int maxZ) {
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        Location nexus = nexusLocation(world);
+        int flowersPlaced = 0;
+        int attempts = FIRST_PURIFICATION_FLOWER_COUNT * 12;
+
+        while (flowersPlaced < FIRST_PURIFICATION_FLOWER_COUNT && attempts-- > 0) {
+            int x = random.nextInt(minX, maxX + 1);
+            int z = random.nextInt(minZ, maxZ + 1);
+            if (nexus != null && Math.abs(x - nexus.getBlockX()) <= 2 && Math.abs(z - nexus.getBlockZ()) <= 2) {
+                continue;
+            }
+
+            int groundY = world.getHighestBlockYAt(x, z);
+            org.bukkit.block.Block ground = world.getBlockAt(x, groundY, z);
+            org.bukkit.block.Block flowerBlock = ground.getRelative(0, 1, 0);
+            if (ground.getType() != Material.GRASS_BLOCK || !flowerBlock.getType().isAir()) {
+                continue;
+            }
+
+            flowerBlock.setType(PURIFICATION_FLOWERS[random.nextInt(PURIFICATION_FLOWERS.length)], false);
+            flowersPlaced++;
+        }
+    }
+
+    private void updateResidueCounter(World world) {
+        Location nexus = nexusLocation(world);
+        if (nexus == null) {
+            return;
+        }
+        Location counterLocation = nexus.clone().add(0.5, 1.4, 0.5);
+        for (org.bukkit.entity.Entity entity : world.getNearbyEntities(counterLocation, 0.1, 0.1, 0.1)) {
+            if (entity instanceof TextDisplay display) {
+                display.text(LegacyComponentSerializer.legacyAmpersand().deserialize(residueCounterText(world)));
+            }
+        }
+    }
+
+    private Location nexusLocation(World world) {
+        if (!world.getName().startsWith(PLAYER_WORLD_PREFIX)) {
+            return null;
+        }
+        String playerName = world.getName().substring(PLAYER_WORLD_PREFIX.length());
+        WastelandGenerator generator = new WastelandGenerator(worldSeed(playerName));
+        int centerX = (int) generator.startingPlotCenterX();
+        int centerZ = (int) generator.startingPlotCenterZ();
+        return new Location(world, centerX, generator.groundHeight(centerX, centerZ) + 1, centerZ);
     }
 
     private boolean isNexus(Location location) {
@@ -274,10 +508,10 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             return false;
         }
 
-        Location spawn = world.getSpawnLocation();
-        return location.getBlockX() == spawn.getBlockX()
-                && location.getBlockY() == spawn.getBlockY() - 1
-                && location.getBlockZ() == spawn.getBlockZ();
+        Location nexus = nexusLocation(world);
+        return nexus != null && location.getBlockX() == nexus.getBlockX()
+                && location.getBlockY() == nexus.getBlockY()
+                && location.getBlockZ() == nexus.getBlockZ();
     }
 
     private void scheduleUnloadIfEmpty(World world) {
@@ -354,15 +588,23 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         }
 
         if (args.length != 1) {
-            player.sendMessage(ChatColor.RED + "Usage: /plot <claim|home>");
+            player.sendMessage(ChatColor.RED + "Usage: /plot <claim|home|delete>");
+            return true;
+        }
+
+        if (args[0].equalsIgnoreCase("delete")) {
+            deletePlot(player);
             return true;
         }
 
         World plotWorld;
+        boolean newlyClaimed;
         if (args[0].equalsIgnoreCase("claim")) {
+            newlyClaimed = getExistingPlotWorld(player.getName()) == null;
             plotWorld = createWasteland(player.getName());
             player.sendMessage(ChatColor.DARK_GREEN + "You step into " + ChatColor.BOLD + "your Blightbreak Wasteland" + ChatColor.DARK_GREEN + ".");
         } else if (args[0].equalsIgnoreCase("home")) {
+            newlyClaimed = false;
             plotWorld = getExistingPlotWorld(player.getName());
             if (plotWorld == null) {
                 player.sendMessage(ChatColor.RED + "You do not have a plot yet. Use /plot claim first.");
@@ -370,13 +612,96 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             }
             player.sendMessage(ChatColor.DARK_GREEN + "You return to " + ChatColor.BOLD + "your Blightbreak Wasteland" + ChatColor.DARK_GREEN + ".");
         } else {
-            player.sendMessage(ChatColor.RED + "Usage: /plot <claim|home>");
+            player.sendMessage(ChatColor.RED + "Usage: /plot <claim|home|delete>");
             return true;
         }
 
         Location arrival = plotWorld.getSpawnLocation().add(0.5, 0, 0.5);
-        player.teleportAsync(arrival);
+        if (newlyClaimed) {
+            player.teleportAsync(arrival).thenAccept(teleported -> {
+                if (teleported) {
+                    getServer().getScheduler().runTask(this, () -> giveStartingTools(player));
+                }
+            });
+        } else {
+            player.teleportAsync(arrival);
+        }
         return true;
+    }
+
+    private void deletePlot(Player owner) {
+        String worldName = playerWorldName(owner.getName());
+        File worldFolder = new File(getServer().getWorldContainer(), worldName);
+        World plotWorld = getServer().getWorld(worldName);
+        if (plotWorld == null && !worldFolder.isDirectory()) {
+            owner.sendMessage(ChatColor.RED + "You do not have a plot to delete.");
+            return;
+        }
+
+        UUID ownerId = owner.getUniqueId();
+        if (plotWorld == null) {
+            deleteWorldDirectory(worldFolder.toPath(), ownerId);
+            owner.sendMessage(ChatColor.YELLOW + "Your plot is being deleted.");
+            return;
+        }
+
+        World fallbackWorld = getServer().getWorlds().stream()
+                .filter(world -> !world.getName().equals(worldName))
+                .findFirst()
+                .orElse(null);
+        if (fallbackWorld == null) {
+            owner.sendMessage(ChatColor.RED + "Could not find a safe world to leave your plot.");
+            return;
+        }
+
+        List<CompletableFuture<Boolean>> teleports = new ArrayList<>();
+        Location fallbackLocation = fallbackWorld.getSpawnLocation().add(0.5, 0, 0.5);
+        for (Player player : List.copyOf(plotWorld.getPlayers())) {
+            teleports.add(player.teleportAsync(fallbackLocation));
+        }
+
+        CompletableFuture.allOf(teleports.toArray(CompletableFuture[]::new)).whenComplete((ignored, throwable) ->
+                getServer().getScheduler().runTask(this, () -> {
+                    World loadedPlotWorld = getServer().getWorld(worldName);
+                    if (loadedPlotWorld != null && !loadedPlotWorld.getPlayers().isEmpty()) {
+                        sendPlotDeletionMessage(ownerId, ChatColor.RED + "Could not move everyone out of your plot.");
+                        return;
+                    }
+                    if (loadedPlotWorld != null && !getServer().unloadWorld(loadedPlotWorld, true)) {
+                        sendPlotDeletionMessage(ownerId, ChatColor.RED + "Could not unload your plot for deletion.");
+                        return;
+                    }
+                    deleteWorldDirectory(worldFolder.toPath(), ownerId);
+                })
+        );
+        owner.sendMessage(ChatColor.YELLOW + "Your plot is being deleted.");
+    }
+
+    private void deleteWorldDirectory(Path worldPath, UUID ownerId) {
+        getServer().getScheduler().runTaskAsynchronously(this, () -> {
+            try (var paths = Files.walk(worldPath)) {
+                paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+                    try {
+                        Files.delete(path);
+                    } catch (IOException exception) {
+                        throw new IllegalStateException("Could not delete " + path, exception);
+                    }
+                });
+                sendPlotDeletionMessage(ownerId, ChatColor.GREEN + "Your plot has been deleted.");
+            } catch (IOException | IllegalStateException exception) {
+                getLogger().warning("Could not delete plot world " + worldPath + ": " + exception.getMessage());
+                sendPlotDeletionMessage(ownerId, ChatColor.RED + "Could not completely delete your plot. Check the server log.");
+            }
+        });
+    }
+
+    private void sendPlotDeletionMessage(UUID playerId, String message) {
+        getServer().getScheduler().runTask(this, () -> {
+            Player player = getServer().getPlayer(playerId);
+            if (player != null) {
+                player.sendMessage(message);
+            }
+        });
     }
 
     /** Generates the barren overworld used for player plots. */

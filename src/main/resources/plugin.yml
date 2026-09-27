@@ -10,8 +10,8 @@ commands:
     description: Sends a test greeting.
     usage: /test
   plot:
-    description: Claims a plot in the Blightbreak Wasteland.
-    usage: /plot <claim|home>
+    description: Claims, visits, or deletes a Blightbreak plot.
+    usage: /plot <claim|home|delete>
   residue:
     description: Gives Blighted Residue to a player.
     usage: /residue give <player> <amount>
