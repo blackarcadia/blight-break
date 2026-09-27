@@ -9,6 +9,7 @@ import org.bukkit.WorldCreator;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
@@ -19,6 +20,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.File;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
+
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 public final class BlightBreak extends JavaPlugin implements Listener {
 
@@ -104,6 +107,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         long worldSeed = worldSeed(playerName);
         WastelandGenerator generator = new WastelandGenerator(worldSeed);
         World world = getServer().getWorld(worldName);
+        boolean newlyCreated = world == null && !new File(getServer().getWorldContainer(), worldName).isDirectory();
         if (world == null) {
             WorldCreator creator = new WorldCreator(worldName)
                     .generator(generator)
@@ -116,6 +120,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         }
 
         configureStartingPlot(world, generator);
+        if (newlyCreated) {
+            createNexus(world);
+        }
         return world;
     }
 
@@ -129,6 +136,30 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                 generator.groundHeight((int) centerX, (int) centerZ) + 1,
                 (int) centerZ
         );
+    }
+
+    /** Creates the landmark at the centre of a newly claimed plot. */
+    private void createNexus(World world) {
+        Location spawn = world.getSpawnLocation();
+        int baseY = spawn.getBlockY() - 1;
+        int centerX = spawn.getBlockX();
+        int centerZ = spawn.getBlockZ();
+
+        for (int x = centerX - 1; x <= centerX + 1; x++) {
+            for (int z = centerZ - 1; z <= centerZ + 1; z++) {
+                world.getBlockAt(x, baseY, z).setType(Material.CRYING_OBSIDIAN, false);
+            }
+        }
+        world.getBlockAt(centerX, baseY + 1, centerZ).setType(Material.BEACON, false);
+        world.setSpawnLocation(centerX, baseY + 2, centerZ);
+
+        Location hologramLocation = new Location(world, centerX + 0.5, baseY + 3.0, centerZ + 0.5);
+        world.spawn(hologramLocation, TextDisplay.class, hologram -> {
+            hologram.text(LegacyComponentSerializer.legacyAmpersand().deserialize("&a&lNexus"));
+            hologram.setBillboard(TextDisplay.Billboard.CENTER);
+            hologram.setSeeThrough(true);
+            hologram.setShadowed(true);
+        });
     }
 
     private static long worldSeed(String playerName) {
