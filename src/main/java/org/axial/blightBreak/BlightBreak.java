@@ -31,7 +31,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("test").setExecutor(this::handleTestCommand);
         getCommand("plot").setExecutor(this::handlePlotCommand);
         getServer().getPluginManager().registerEvents(this, this);
-        getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 10L);
+        getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 5L);
     }
 
     /** Keeps the edge of each wasteland visibly hostile without placing particles outside its border. */
@@ -48,12 +48,14 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             }
 
             ThreadLocalRandom random = ThreadLocalRandom.current();
-            if (random.nextInt(100) < 65) {
-                player.spawnParticle(Particle.ASH, particleLocation, 5, 0.65, 1.2, 0.65, 0.01);
+            if (random.nextInt(100) < 45) {
+                player.spawnParticle(Particle.ASH, particleLocation, 16, 0.9, 1.5, 0.9, 0.015);
+            } else if (random.nextInt(100) < 70) {
+                player.spawnParticle(Particle.CAMPFIRE_COSY_SMOKE, particleLocation, 10, 0.8, 1.3, 0.8, 0.025);
             } else if (random.nextBoolean()) {
-                player.spawnParticle(Particle.SOUL_FIRE_FLAME, particleLocation, 2, 0.45, 0.8, 0.45, 0.005);
+                player.spawnParticle(Particle.SOUL_FIRE_FLAME, particleLocation, 5, 0.55, 1.0, 0.55, 0.008);
             } else {
-                player.spawnParticle(Particle.CRIMSON_SPORE, particleLocation, 3, 0.65, 1.0, 0.65, 0.01);
+                player.spawnParticle(Particle.CRIMSON_SPORE, particleLocation, 9, 0.85, 1.3, 0.85, 0.015);
             }
         }
     }
@@ -214,6 +216,8 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     /** Generates the barren overworld used for player plots. */
     private static final class WastelandGenerator extends ChunkGenerator {
         private static final int SURFACE_Y = 63;
+        private static final int WATER_LEVEL = 62;
+        private static final double STARTING_PLOT_SAFE_RADIUS = 20.0;
         private final long terrainSeed;
         private static final Material[] SURFACE_BLOCKS = {
                 Material.ROOTED_DIRT,
@@ -238,11 +242,15 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                     int worldX = originX + localX;
                     int worldZ = originZ + localZ;
                     int surfaceY = groundHeight(worldX, worldZ);
+                    boolean water = surfaceY < WATER_LEVEL;
 
                     chunk.setBlock(localX, 0, localZ, Material.BEDROCK);
                     chunk.setRegion(localX, 1, localZ, localX + 1, surfaceY - 3, localZ + 1, Material.STONE);
                     chunk.setRegion(localX, surfaceY - 3, localZ, localX + 1, surfaceY, localZ + 1, Material.DIRT);
-                    chunk.setBlock(localX, surfaceY, localZ, surfaceMaterial(worldX, worldZ));
+                    chunk.setBlock(localX, surfaceY, localZ, water ? waterbedMaterial(worldX, worldZ) : surfaceMaterial(worldX, worldZ));
+                    if (water) {
+                        chunk.setRegion(localX, surfaceY + 1, localZ, localX + 1, WATER_LEVEL + 1, localZ + 1, Material.WATER);
+                    }
                 }
             }
 
@@ -257,8 +265,46 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             double rollingHills = fractalNoise(x, z, 95.0, 4) * 7.0;
             double mountainRidges = (0.35 + fractalNoise(x, z, 52.0, 3) * 0.65) * mountainRegion * 34.0;
             double valleyDepth = valleyRegion * 11.0;
+            double naturalHeight = SURFACE_Y + rollingHills + mountainRidges - valleyDepth;
+            double waterCarve = Math.max(oceanCarve(x, z), riverCarve(x, z));
+            double waterbedHeight = WATER_LEVEL - 4.0 + fractalNoise(x, z, 18.0, 2) * 1.5;
 
-            return SURFACE_Y + (int) Math.round(rollingHills + mountainRidges - valleyDepth);
+            return (int) Math.round(lerp(naturalHeight, waterbedHeight, waterCarve));
+        }
+
+        /**
+         * Forms occasional broad basins. The coarse field keeps them compact while the finer
+         * field breaks up their shorelines, so they read as small inland oceans rather than circles.
+         */
+        private double oceanCarve(int x, int z) {
+            if (isStartingPlotArea(x, z)) {
+                return 0.0;
+            }
+
+            double basin = valueNoise(x / 145.0, z / 145.0);
+            double brokenShore = valueNoise((x + 4_183) / 43.0, (z - 7_291) / 43.0);
+            return smoothStep(0.76, 0.90, basin) * (0.82 + brokenShore * 0.18);
+        }
+
+        /** Creates two independently warped, world-spanning channels that join naturally at crossings. */
+        private double riverCarve(int x, int z) {
+            if (isStartingPlotArea(x, z)) {
+                return 0.0;
+            }
+
+            double eastWestCenter = Math.sin(x / 74.0) * 19.0 + fractalNoise(x, 3_817, 110.0, 3) * 16.0;
+            double northSouthCenter = Math.cos(z / 91.0) * 23.0 + fractalNoise(6_149, z, 105.0, 3) * 15.0;
+            double channelDistance = Math.min(Math.abs(z - eastWestCenter), Math.abs(x - northSouthCenter));
+            double width = 2.6 + valueNoise((x - 911) / 36.0, (z + 2_077) / 36.0) * 2.4;
+            return smoothStep(width + 2.0, width, channelDistance);
+        }
+
+        private static boolean isStartingPlotArea(int x, int z) {
+            double centerX = STARTING_PLOT_CENTER;
+            double centerZ = STARTING_PLOT_CENTER;
+            double offsetX = x - centerX;
+            double offsetZ = z - centerZ;
+            return offsetX * offsetX + offsetZ * offsetZ < STARTING_PLOT_SAFE_RADIUS * STARTING_PLOT_SAFE_RADIUS;
         }
 
         private double fractalNoise(int x, int z, double scale, int octaves) {
@@ -305,6 +351,10 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             return SURFACE_BLOCKS[(int) Math.floorMod(value, (long) SURFACE_BLOCKS.length)];
         }
 
+        private Material waterbedMaterial(int x, int z) {
+            return Math.floorMod(hash(x - 1_337, z + 4_219), 4) == 0 ? Material.MUD : Material.GRAVEL;
+        }
+
         private void generateDeadTrees(ChunkData chunk, int chunkX, int chunkZ) {
             // The origin chunk is the player's initial 16x16 home plot; leave it clear to build on.
             if (chunkX == 0 && chunkZ == 0) {
@@ -323,6 +373,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
                 int z = 4 + treeRandom.nextInt(8);
                 int worldX = (chunkX << 4) + x;
                 int worldZ = (chunkZ << 4) + z;
+                if (groundHeight(worldX, worldZ) < WATER_LEVEL) {
+                    continue;
+                }
                 int y = groundHeight(worldX, worldZ) + 1;
                 growDeadTree(chunk, treeRandom, x, y, z, treeRandom.nextInt(3));
             }
