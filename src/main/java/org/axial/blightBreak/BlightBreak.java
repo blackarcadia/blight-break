@@ -2,6 +2,7 @@ package org.axial.blightBreak;
 
 import org.bukkit.ChatColor;
 import org.bukkit.Chunk;
+import org.bukkit.DisplaySlot;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
@@ -28,6 +29,7 @@ import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerFishEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.generator.ChunkGenerator;
@@ -38,6 +40,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.scoreboard.Objective;
+import org.bukkit.scoreboard.Scoreboard;
 
 import java.io.File;
 import java.io.IOException;
@@ -66,6 +70,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private final Map<UUID, List<ItemStack>> deathBoundTools = new HashMap<>();
 
     private static final String PLAYER_WORLD_PREFIX = "BlightBreak_";
+    private static final String SIDEBAR_TITLE = "&2&LBlight&a&lBreak &7V.dev";
     private static final double STARTING_PLOT_SIZE = 16.0;
     private static final int STARTING_RESIDUE_REQUIREMENT = 25;
     private static final double RESIDUE_REQUIREMENT_GROWTH = 1.10;
@@ -111,6 +116,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         getCommand("plot").setExecutor(this::handlePlotCommand);
         getCommand("residue").setExecutor(this::handleResidueCommand);
         getServer().getPluginManager().registerEvents(this, this);
+        for (Player player : getServer().getOnlinePlayers()) {
+            createSidebar(player);
+        }
         getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 5L);
         getServer().getScheduler().runTaskTimer(this, this::applyBlightHazards, 20L, 20L);
     }
@@ -150,6 +158,20 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         player.removePotionEffect(PotionEffectType.WEAKNESS);
         player.removePotionEffect(PotionEffectType.MINING_FATIGUE);
         player.removePotionEffect(PotionEffectType.NAUSEA);
+    }
+
+    private void createSidebar(Player player) {
+        Scoreboard scoreboard = getServer().getScoreboardManager().getNewScoreboard();
+        Objective objective = scoreboard.registerNewObjective(
+                "blightbreak", "dummy", ChatColor.translateAlternateColorCodes('&', SIDEBAR_TITLE)
+        );
+        objective.setDisplaySlot(DisplaySlot.SIDEBAR);
+        player.setScoreboard(scoreboard);
+    }
+
+    @EventHandler
+    private void onPlayerJoin(PlayerJoinEvent event) {
+        createSidebar(event.getPlayer());
     }
 
     @EventHandler(ignoreCancelled = true)
