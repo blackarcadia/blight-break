@@ -17,6 +17,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import io.papermc.paper.event.player.AsyncChatEvent;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockCookEvent;
@@ -50,6 +51,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.luckperms.api.LuckPerms;
+import net.luckperms.api.LuckPermsProvider;
+import net.luckperms.api.model.group.Group;
+import net.luckperms.api.model.user.User;
 
 public final class BlightBreak extends JavaPlugin implements Listener {
 
@@ -74,6 +81,24 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             + "&fApply blighted residue by interacting with the nexus while holding residue. "
             + "Apply enough residue in order to purify the chunks around the nexus border.";
 
+    private enum ChatRank {
+        OWNER("owner", "&f<&4&lAdmin&f> ", NamedTextColor.DARK_RED, NamedTextColor.RED),
+        DEV("dev", "&f<&6&lDev&f> ", NamedTextColor.GOLD, NamedTextColor.YELLOW),
+        DEFAULT("default", "&7", NamedTextColor.GRAY, NamedTextColor.WHITE);
+
+        private final String group;
+        private final String prefix;
+        private final NamedTextColor nameColor;
+        private final NamedTextColor messageColor;
+
+        ChatRank(String group, String prefix, NamedTextColor nameColor, NamedTextColor messageColor) {
+            this.group = group;
+            this.prefix = prefix;
+            this.nameColor = nameColor;
+            this.messageColor = messageColor;
+        }
+    }
+
     @Override
     public void onEnable() {
         getCommand("test").setExecutor(this::handleTestCommand);
@@ -96,6 +121,45 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             player.sendActionBar(ChatColor.translateAlternateColorCodes('&', TOXIC_WATER_MESSAGE));
             player.damage(TOXIC_WATER_DAMAGE);
         }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    private void onPlayerChat(AsyncChatEvent event) {
+        ChatRank rank = chatRank(event.getPlayer());
+        if (rank == null) {
+            return;
+        }
+
+        event.renderer((source, sourceDisplayName, message, viewer) ->
+                LegacyComponentSerializer.legacyAmpersand().deserialize(rank.prefix)
+                        .append(Component.text(source.getName(), rank.nameColor))
+                        .append(Component.text(": "))
+                        .append(message.color(rank.messageColor))
+        );
+    }
+
+    private ChatRank chatRank(Player player) {
+        if (!getServer().getPluginManager().isPluginEnabled("LuckPerms")) {
+            return null;
+        }
+
+        LuckPerms luckPerms = LuckPermsProvider.get();
+        User user = luckPerms.getPlayerAdapter(Player.class).getUser(player);
+        var queryOptions = luckPerms.getPlayerAdapter(Player.class).getQueryOptions(player);
+
+        if (isInGroup(user, queryOptions, ChatRank.OWNER.group)) {
+            return ChatRank.OWNER;
+        }
+        if (isInGroup(user, queryOptions, ChatRank.DEV.group)) {
+            return ChatRank.DEV;
+        }
+        return isInGroup(user, queryOptions, ChatRank.DEFAULT.group) ? ChatRank.DEFAULT : null;
+    }
+
+    private boolean isInGroup(User user, net.luckperms.api.query.QueryOptions queryOptions, String groupName) {
+        return user.getInheritedGroups(queryOptions).stream()
+                .map(Group::getName)
+                .anyMatch(groupName::equalsIgnoreCase);
     }
 
     /** Keeps the edge of each wasteland visibly hostile without placing particles outside its border. */
