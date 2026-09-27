@@ -9,3 +9,6 @@ commands:
   test:
     description: Sends a test greeting.
     usage: /test
+  plot:
+    description: Claims a plot in the Blightbreak Wasteland.
+    usage: /plot claim
