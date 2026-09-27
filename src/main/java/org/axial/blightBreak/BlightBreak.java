@@ -1,16 +1,19 @@
 package org.axial.blightBreak;
 
+import org.bukkit.ChatColor;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class BlightBreak extends JavaPlugin {
 
     @Override
     public void onEnable() {
-        // Plugin startup logic
+        getCommand("test").setExecutor(this::handleTestCommand);
     }
 
-    @Override
-    public void onDisable() {
-        // Plugin shutdown logic
+    private boolean handleTestCommand(CommandSender sender, Command command, String label, String[] args) {
+        sender.sendMessage(ChatColor.GREEN.toString() + ChatColor.BOLD + "Hello :)");
+        return true;
     }
 }
