@@ -24,7 +24,6 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
     private static final String PLAYER_WORLD_PREFIX = "BlightBreak_";
     private static final double STARTING_PLOT_SIZE = 16.0;
-    private static final double STARTING_PLOT_CENTER = STARTING_PLOT_SIZE / 2.0;
 
     @Override
     public void onEnable() {
@@ -51,7 +50,7 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             if (random.nextInt(100) < 45) {
                 player.spawnParticle(Particle.ASH, particleLocation, 16, 0.9, 1.5, 0.9, 0.015);
             } else if (random.nextInt(100) < 70) {
-                player.spawnParticle(Particle.CAMPFIRE_COSY_SMOKE, particleLocation, 10, 0.8, 1.3, 0.8, 0.025);
+                player.spawnParticle(Particle.SMOKE, particleLocation, 10, 0.8, 1.3, 0.8, 0.025);
             } else if (random.nextBoolean()) {
                 player.spawnParticle(Particle.SOUL_FIRE_FLAME, particleLocation, 5, 0.55, 1.0, 0.55, 0.008);
             } else {
@@ -121,12 +120,14 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     }
 
     private void configureStartingPlot(World world, WastelandGenerator generator) {
-        world.getWorldBorder().setCenter(STARTING_PLOT_CENTER, STARTING_PLOT_CENTER);
+        double centerX = generator.startingPlotCenterX();
+        double centerZ = generator.startingPlotCenterZ();
+        world.getWorldBorder().setCenter(centerX, centerZ);
         world.getWorldBorder().setSize(STARTING_PLOT_SIZE);
         world.setSpawnLocation(
-                (int) STARTING_PLOT_CENTER,
-                generator.groundHeight((int) STARTING_PLOT_CENTER, (int) STARTING_PLOT_CENTER) + 1,
-                (int) STARTING_PLOT_CENTER
+                (int) centerX,
+                generator.groundHeight((int) centerX, (int) centerZ) + 1,
+                (int) centerZ
         );
     }
 
@@ -217,8 +218,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     private static final class WastelandGenerator extends ChunkGenerator {
         private static final int SURFACE_Y = 63;
         private static final int WATER_LEVEL = 62;
-        private static final double STARTING_PLOT_SAFE_RADIUS = 20.0;
         private final long terrainSeed;
+        private final int claimChunkX;
+        private final int claimChunkZ;
         private static final Material[] SURFACE_BLOCKS = {
                 Material.ROOTED_DIRT,
                 Material.PODZOL,
@@ -229,6 +231,9 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
         private WastelandGenerator(long terrainSeed) {
             this.terrainSeed = terrainSeed;
+            int[] claimChunk = findDryClaimChunk();
+            this.claimChunkX = claimChunk[0];
+            this.claimChunkZ = claimChunk[1];
         }
 
         @Override
@@ -277,10 +282,6 @@ public final class BlightBreak extends JavaPlugin implements Listener {
          * field breaks up their shorelines, so they read as small inland oceans rather than circles.
          */
         private double oceanCarve(int x, int z) {
-            if (isStartingPlotArea(x, z)) {
-                return 0.0;
-            }
-
             double basin = valueNoise(x / 145.0, z / 145.0);
             double brokenShore = valueNoise((x + 4_183) / 43.0, (z - 7_291) / 43.0);
             return smoothStep(0.76, 0.90, basin) * (0.82 + brokenShore * 0.18);
@@ -288,10 +289,6 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
         /** Creates two independently warped, world-spanning channels that join naturally at crossings. */
         private double riverCarve(int x, int z) {
-            if (isStartingPlotArea(x, z)) {
-                return 0.0;
-            }
-
             double eastWestCenter = Math.sin(x / 74.0) * 19.0 + fractalNoise(x, 3_817, 110.0, 3) * 16.0;
             double northSouthCenter = Math.cos(z / 91.0) * 23.0 + fractalNoise(6_149, z, 105.0, 3) * 15.0;
             double channelDistance = Math.min(Math.abs(z - eastWestCenter), Math.abs(x - northSouthCenter));
@@ -299,12 +296,47 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             return smoothStep(width + 2.0, width, channelDistance);
         }
 
-        private static boolean isStartingPlotArea(int x, int z) {
-            double centerX = STARTING_PLOT_CENTER;
-            double centerZ = STARTING_PLOT_CENTER;
-            double offsetX = x - centerX;
-            double offsetZ = z - centerZ;
-            return offsetX * offsetX + offsetZ * offsetZ < STARTING_PLOT_SAFE_RADIUS * STARTING_PLOT_SAFE_RADIUS;
+        private int[] findDryClaimChunk() {
+            Random locationRandom = new Random(terrainSeed ^ 0x6A09E667F3BCC909L);
+            int baseChunkX = locationRandom.nextInt(33) - 16;
+            int baseChunkZ = locationRandom.nextInt(33) - 16;
+
+            for (int radius = 0; radius <= 32; radius++) {
+                for (int offsetX = -radius; offsetX <= radius; offsetX++) {
+                    for (int offsetZ = -radius; offsetZ <= radius; offsetZ++) {
+                        if (Math.max(Math.abs(offsetX), Math.abs(offsetZ)) != radius) {
+                            continue;
+                        }
+                        int chunkX = baseChunkX + offsetX;
+                        int chunkZ = baseChunkZ + offsetZ;
+                        if (isDryClaimChunk(chunkX, chunkZ)) {
+                            return new int[]{chunkX, chunkZ};
+                        }
+                    }
+                }
+            }
+            throw new IllegalStateException("Could not find dry terrain for the starting claim.");
+        }
+
+        private boolean isDryClaimChunk(int chunkX, int chunkZ) {
+            int originX = chunkX << 4;
+            int originZ = chunkZ << 4;
+            for (int localX = 0; localX < 16; localX++) {
+                for (int localZ = 0; localZ < 16; localZ++) {
+                    if (groundHeight(originX + localX, originZ + localZ) < WATER_LEVEL) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
+        private double startingPlotCenterX() {
+            return (claimChunkX << 4) + STARTING_PLOT_SIZE / 2.0;
+        }
+
+        private double startingPlotCenterZ() {
+            return (claimChunkZ << 4) + STARTING_PLOT_SIZE / 2.0;
         }
 
         private double fractalNoise(int x, int z, double scale, int octaves) {
@@ -356,8 +388,8 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         }
 
         private void generateDeadTrees(ChunkData chunk, int chunkX, int chunkZ) {
-            // The origin chunk is the player's initial 16x16 home plot; leave it clear to build on.
-            if (chunkX == 0 && chunkZ == 0) {
+            // The selected chunk is the player's initial 16x16 home plot; leave it clear to build on.
+            if (chunkX == claimChunkX && chunkZ == claimChunkZ) {
                 return;
             }
 
