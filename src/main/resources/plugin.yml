@@ -11,4 +11,4 @@ commands:
     usage: /test
   plot:
     description: Claims a plot in the Blightbreak Wasteland.
-    usage: /plot claim
+    usage: /plot <claim|home>
