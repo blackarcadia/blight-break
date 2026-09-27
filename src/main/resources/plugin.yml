@@ -12,3 +12,6 @@ commands:
   plot:
     description: Claims a plot in the Blightbreak Wasteland.
     usage: /plot <claim|home>
+  residue:
+    description: Gives Blighted Residue to a player.
+    usage: /residue give <player> <amount>

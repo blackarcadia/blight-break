@@ -3,6 +3,7 @@ package org.axial.blightBreak;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
 import org.bukkit.World;
 import org.bukkit.WorldCreator;
@@ -12,12 +13,18 @@ import org.bukkit.entity.Player;
 import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.generator.ChunkGenerator;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.persistence.PersistentDataType;
 
 import java.io.File;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -27,11 +34,17 @@ public final class BlightBreak extends JavaPlugin implements Listener {
 
     private static final String PLAYER_WORLD_PREFIX = "BlightBreak_";
     private static final double STARTING_PLOT_SIZE = 16.0;
+    private static final int RESIDUE_REQUIRED_FOR_PURIFICATION = 64;
+    private static final String NEXUS_CORE_MESSAGE = "&a&l(!) Nexus Core\n\n"
+            + "&fThe Nexus Core allows you to purify your land, making it safe to enhabit.\n\n"
+            + "&fApply blighted residue by interacting with the nexus while holding residue. "
+            + "Apply enough residue in order to purify the chunks around the nexus border.";
 
     @Override
     public void onEnable() {
         getCommand("test").setExecutor(this::handleTestCommand);
         getCommand("plot").setExecutor(this::handlePlotCommand);
+        getCommand("residue").setExecutor(this::handleResidueCommand);
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimer(this, this::spawnBorderParticles, 20L, 5L);
     }
@@ -160,6 +173,53 @@ public final class BlightBreak extends JavaPlugin implements Listener {
             hologram.setSeeThrough(true);
             hologram.setShadowed(true);
         });
+
+        Location instructionLocation = new Location(world, centerX + 0.5, baseY + 2.7, centerZ + 0.5);
+        world.spawn(instructionLocation, TextDisplay.class, hologram -> {
+            hologram.text(LegacyComponentSerializer.legacyAmpersand().deserialize("&fApply Blighted Residue"));
+            hologram.setBillboard(TextDisplay.Billboard.CENTER);
+            hologram.setSeeThrough(true);
+            hologram.setShadowed(true);
+        });
+
+        Location residueCounterLocation = new Location(world, centerX + 0.5, baseY + 2.4, centerZ + 0.5);
+        world.spawn(residueCounterLocation, TextDisplay.class, hologram -> {
+            hologram.text(LegacyComponentSerializer.legacyAmpersand().deserialize(
+                    "&e" + storedResidue(world) + " / " + RESIDUE_REQUIRED_FOR_PURIFICATION + " Residue"
+            ));
+            hologram.setBillboard(TextDisplay.Billboard.CENTER);
+            hologram.setSeeThrough(true);
+            hologram.setShadowed(true);
+        });
+    }
+
+    private int storedResidue(World world) {
+        Integer amount = world.getPersistentDataContainer().get(residueAmountKey(), PersistentDataType.INTEGER);
+        return amount == null ? 0 : amount;
+    }
+
+    private NamespacedKey residueAmountKey() {
+        return new NamespacedKey(this, "nexus_residue");
+    }
+
+    private ItemStack createBlightedResidue() {
+        ItemStack residue = new ItemStack(Material.NETHERRACK);
+        ItemMeta meta = residue.getItemMeta();
+        meta.setDisplayName(ChatColor.translateAlternateColorCodes('&', "&c&lBlighted Residue"));
+        meta.setLore(List.of(
+                ChatColor.translateAlternateColorCodes('&', "&7Residue with the power"),
+                ChatColor.translateAlternateColorCodes('&', "&7to purify wastelands"),
+                "",
+                ChatColor.translateAlternateColorCodes('&', "&7Deposit this into a nexus"),
+                ChatColor.translateAlternateColorCodes('&', "&7core to purify")
+        ));
+        meta.getPersistentDataContainer().set(residueItemKey(), PersistentDataType.BYTE, (byte) 1);
+        residue.setItemMeta(meta);
+        return residue;
+    }
+
+    private NamespacedKey residueItemKey() {
+        return new NamespacedKey(this, "blighted_residue");
     }
 
     private static long worldSeed(String playerName) {
@@ -195,6 +255,31 @@ public final class BlightBreak extends JavaPlugin implements Listener {
         scheduleUnloadIfEmpty(event.getPlayer().getWorld());
     }
 
+    /** Replaces the beacon's standard interface with the Nexus Core instructions. */
+    @EventHandler
+    private void onNexusInteract(PlayerInteractEvent event) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK || event.getClickedBlock() == null
+                || event.getClickedBlock().getType() != Material.BEACON
+                || !isNexus(event.getClickedBlock().getLocation())) {
+            return;
+        }
+
+        event.setCancelled(true);
+        event.getPlayer().sendMessage(ChatColor.translateAlternateColorCodes('&', NEXUS_CORE_MESSAGE));
+    }
+
+    private boolean isNexus(Location location) {
+        World world = location.getWorld();
+        if (world == null || !world.getName().startsWith(PLAYER_WORLD_PREFIX)) {
+            return false;
+        }
+
+        Location spawn = world.getSpawnLocation();
+        return location.getBlockX() == spawn.getBlockX()
+                && location.getBlockY() == spawn.getBlockY() - 1
+                && location.getBlockZ() == spawn.getBlockZ();
+    }
+
     private void scheduleUnloadIfEmpty(World world) {
         if (!world.getName().startsWith(PLAYER_WORLD_PREFIX)) {
             return;
@@ -209,8 +294,57 @@ public final class BlightBreak extends JavaPlugin implements Listener {
     }
 
     private boolean handleTestCommand(CommandSender sender, Command command, String label, String[] args) {
-        sender.sendMessage(ChatColor.GREEN.toString() + ChatColor.BOLD + "Hello :)");
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage(ChatColor.RED + "Only players can receive Blighted Residue.");
+            return true;
+        }
+
+        player.getInventory().addItem(createBlightedResidue())
+                .values()
+                .forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
+        player.sendMessage(ChatColor.GREEN + "You received Blighted Residue.");
         return true;
+    }
+
+    private boolean handleResidueCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (args.length != 3 || !args[0].equalsIgnoreCase("give")) {
+            sender.sendMessage(ChatColor.RED + "Usage: /residue give <player> <amount>");
+            return true;
+        }
+
+        Player target = getServer().getPlayerExact(args[1]);
+        if (target == null) {
+            sender.sendMessage(ChatColor.RED + "That player is not online.");
+            return true;
+        }
+
+        int amount;
+        try {
+            amount = Integer.parseInt(args[2]);
+        } catch (NumberFormatException exception) {
+            sender.sendMessage(ChatColor.RED + "Amount must be a whole number.");
+            return true;
+        }
+        if (amount < 1) {
+            sender.sendMessage(ChatColor.RED + "Amount must be at least 1.");
+            return true;
+        }
+
+        giveBlightedResidue(target, amount);
+        sender.sendMessage(ChatColor.GREEN + "Gave " + amount + " Blighted Residue to " + target.getName() + ".");
+        return true;
+    }
+
+    private void giveBlightedResidue(Player player, int amount) {
+        while (amount > 0) {
+            ItemStack residue = createBlightedResidue();
+            int stackAmount = Math.min(amount, residue.getMaxStackSize());
+            residue.setAmount(stackAmount);
+            player.getInventory().addItem(residue)
+                    .values()
+                    .forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
+            amount -= stackAmount;
+        }
     }
 
     private boolean handlePlotCommand(CommandSender sender, Command command, String label, String[] args) {
